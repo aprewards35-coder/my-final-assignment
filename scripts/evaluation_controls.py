@@ -6,13 +6,17 @@ Validated limits are configuration, not enforcement or cancellation.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
+import subprocess
+import sys
 import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 APPROVED_MAX_CASES = 40
@@ -70,6 +74,7 @@ class EvidenceWriter:
         output_parent: Path,
         *,
         repository_root: Path = REPOSITORY_ROOT,
+        clock=time.monotonic,
     ) -> None:
         parent = Path(output_parent).resolve(strict=True)
         repository = Path(repository_root).resolve(strict=True)
@@ -78,6 +83,9 @@ class EvidenceWriter:
         if not parent.is_dir():
             raise ValueError("Evidence output parent must be a directory")
 
+        self._clock = clock
+        self._started = self._read_clock()
+        self._last = self._started
         self._lock = threading.Lock()
         self._failed = False
         self._closed = False
@@ -98,6 +106,14 @@ class EvidenceWriter:
                 raise
         except Exception:
             raise EvidenceError("Could not initialize evidence file") from None
+
+    def _read_clock(self) -> float:
+        value = self._clock()
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("Clock must return a finite number")
+        if not math.isfinite(value):
+            raise ValueError("Clock must return a finite number")
+        return value
 
     @property
     def failed(self) -> bool:
@@ -121,9 +137,18 @@ class EvidenceWriter:
                     raise ValueError("Event name must be nonempty text")
                 if not isinstance(data, dict):
                     raise ValueError("Event data must be an object")
+                now = self._read_clock()
+                if now < self._last:
+                    raise ValueError("Clock moved backwards")
+                elapsed = now - self._started
+                if not math.isfinite(elapsed):
+                    raise ValueError("Elapsed time must be finite")
+                self._last = now
                 sequence = self._sequence + 1
                 record = {
                     "schema": "evaluation-evidence.v1",
+                    "recorded_at_utc": datetime.now(UTC).isoformat(),
+                    "writer_elapsed_s": elapsed,
                     "run_id": self.run_id,
                     "sequence": sequence,
                     "event": event,
@@ -384,6 +409,41 @@ class CaseController:
         self._case_lock = threading.Lock()
         self._cases = 0
         self._seen: set[tuple[str, str]] = set()
+        self._stop_recorded = False
+        try:
+            gate.check_case_admission()
+            record_offline_provenance(writer)
+            gate.check_case_admission()
+            writer.write(
+                "run_started",
+                {
+                    "mode": "controlled_offline_verification",
+                    "max_cases": gate.limits.max_cases,
+                    "max_attempts": gate.limits.max_attempts,
+                    "max_elapsed_s": gate.limits.max_elapsed_s,
+                    "budget_origin": "attempt_gate_construction",
+                    "live_execution_authorized": False,
+                },
+            )
+            gate.check_case_admission()
+        except BaseException:
+            gate.stop()
+            raise
+
+    def _record_admission_stop(self, reason: str) -> None:
+        if self._stop_recorded or self._writer.failed:
+            return
+        self._writer.write(
+            "run_admission_stopped",
+            {
+                "reason": reason,
+                "cases_admitted": self._cases,
+                "attempts_reserved": self._gate.reserved,
+                "unresolved_attempt_id": self._gate.active,
+                "provider_work_termination_verified": False,
+            },
+        )
+        self._stop_recorded = True
 
     @property
     def cases_admitted(self) -> int:
@@ -402,15 +462,20 @@ class CaseController:
             self._gate.stop()
             raise AdmissionError("Another case is already active")
         try:
-            return self._run_case(
+            result = self._run_case(
                 case_id=case_id,
                 revision=revision,
                 question=question,
                 client=client,
                 agent_factory=agent_factory,
             )
-        except BaseException:
+            if self._gate.stopped:
+                self._record_admission_stop("case_returned_with_admission_stopped")
+            return result
+        except BaseException as error:
             self._gate.stop()
+            reason = "admission_denied" if isinstance(error, AdmissionError) else "case_error"
+            self._record_admission_stop(reason)
             raise
         finally:
             self._case_lock.release()
@@ -497,3 +562,65 @@ class CaseController:
             },
         )
         return result
+
+
+SELECTED_BASELINE = "da5776412fe0c200201032726b7db4a2f0cce954"
+
+
+def record_offline_provenance(writer: EvidenceWriter) -> None:
+    """Record observed local provenance, not candidate approval or execution.
+
+    Source hashes are collected sequentially, not as an atomic snapshot.
+    Only explicitly allowlisted sources and tracked corpus files are read.
+    This function performs no network operation or provider construction.
+    """
+    root = REPOSITORY_ROOT
+
+    def git(*arguments: str) -> bytes:
+        return subprocess.check_output(
+            ["git", *arguments],
+            cwd=root,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+
+    try:
+        head = git("rev-parse", "HEAD").decode("ascii").strip()
+        dirty = bool(git("status", "--porcelain", "--untracked-files=normal"))
+        corpus_paths = git("ls-files", "-z", "--", "data/corpus").split(b"\0")
+        paths = [
+            "scripts/evaluation_controls.py",
+            "agent.py",
+            "safety.py",
+            "pyproject.toml",
+            "uv.lock",
+        ]
+        paths.extend(path.decode("utf-8") for path in corpus_paths if path)
+        fingerprints = {}
+        for relative in paths:
+            path = root / relative
+            resolved = path.resolve(strict=True)
+            if root not in resolved.parents or path.is_symlink():
+                raise ValueError("Source path is not an ordinary repository source")
+            fingerprints[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+
+        writer.write(
+            "offline_provenance",
+            {
+                "mode": "controlled_offline_verification",
+                "selected_baseline": SELECTED_BASELINE,
+                "observed_head": head,
+                "working_tree_dirty": dirty,
+                "python_version": sys.version.split()[0],
+                "source_sha256": fingerprints,
+                "candidate_revision": None,
+                "live_execution_authorized": False,
+                "baseline_execution_verified": False,
+                "snapshot_atomic": False,
+                "installed_dependency_contents_verified": False,
+            },
+        )
+    except EvidenceError:
+        raise
+    except Exception:
+        raise EvidenceError("Offline provenance could not be recorded") from None

@@ -16,6 +16,7 @@ from scripts.evaluation_controls import (
     EvidenceError,
     EvidenceWriter,
     RecordingClient,
+    record_offline_provenance,
 )
 
 
@@ -842,7 +843,9 @@ def test_controller_stops_after_provider_failure(tmp_path) -> None:
                 client=underlying, agent_factory=YourAgent,
             )
         assert len(underlying.calls) == 1
-        terminal = read_records(writer)[-1]
+        terminal = next(
+            row for row in read_records(writer) if row["event"] == "case_returned"
+        )
         assert terminal["event"] == "case_returned"
         assert terminal["data"]["provider_failure"]
         assert terminal["data"]["admission_stopped"]
@@ -995,7 +998,9 @@ def test_controller_automatically_stops_after_application_timeout(tmp_path) -> N
         # No manual gate.stop(): the controller must make this decision.
         assert gate.stopped
         assert gate.active == 1
-        terminal = read_records(writer)[-1]
+        terminal = next(
+            row for row in read_records(writer) if row["event"] == "case_returned"
+        )
         assert terminal["event"] == "case_returned"
         assert terminal["data"]["provider_failure"]
         assert terminal["data"]["unresolved_invocation"]
@@ -1053,9 +1058,12 @@ def test_controller_factory_exception_stops_admission(tmp_path) -> None:
         assert gate.reserved == 0
         assert controller.cases_admitted == 1
         records = read_records(writer)
-        assert [row["event"] for row in records] == ["case_started", "case_raised"]
-        assert records[-1]["data"]["phase"] == "agent_construction"
-        assert records[-1]["data"]["exception_type"] == "RuntimeError"
+        assert [row["event"] for row in records] == [
+            "offline_provenance", "run_started", "case_started",
+            "case_raised", "run_admission_stopped",
+        ]
+        assert records[-2]["data"]["phase"] == "agent_construction"
+        assert records[-2]["data"]["exception_type"] == "RuntimeError"
     finally:
         writer.close()
 
@@ -1090,8 +1098,186 @@ def test_controller_deadline_during_start_write_blocks_factory(tmp_path, monkeyp
         assert gate.reserved == 0
         assert controller.cases_admitted == 1
         records = read_records(writer)
-        assert [row["event"] for row in records] == ["case_started", "case_raised"]
-        assert records[-1]["data"]["phase"] == "pre_construction_admission"
-        assert records[-1]["data"]["exception_type"] == "AdmissionError"
+        assert [row["event"] for row in records] == [
+            "offline_provenance", "run_started", "case_started",
+            "case_raised", "run_admission_stopped",
+        ]
+        assert records[-2]["data"]["phase"] == "pre_construction_admission"
+        assert records[-2]["data"]["exception_type"] == "AdmissionError"
+    finally:
+        writer.close()
+
+
+def test_writer_records_utc_and_monotonic_elapsed_time(tmp_path) -> None:
+    from datetime import datetime
+
+    readings = iter([100.0, 100.25, 101.0])
+    writer = EvidenceWriter(tmp_path, clock=lambda: next(readings))
+    try:
+        writer.write("first", {})
+        writer.write("second", {})
+    finally:
+        writer.close()
+
+    records = read_records(writer)
+    assert [row["writer_elapsed_s"] for row in records] == [0.25, 1.0]
+    for row in records:
+        timestamp = datetime.fromisoformat(row["recorded_at_utc"])
+        assert timestamp.utcoffset().total_seconds() == 0
+
+
+@pytest.mark.parametrize("bad_clock", [float("nan"), float("inf"), True, "0", 99.0])
+def test_writer_bad_event_clock_permanently_disables_recording(tmp_path, bad_clock) -> None:
+    readings = iter([100.0, bad_clock])
+    writer = EvidenceWriter(tmp_path, clock=lambda: next(readings))
+    try:
+        with pytest.raises(EvidenceError):
+            writer.write("invalid_clock", {})
+        assert writer.failed
+        with pytest.raises(EvidenceError):
+            writer.write("later", {})
+        assert writer.path.read_bytes() == b""
+    finally:
+        writer.close()
+
+
+def test_writer_clock_exception_permanently_disables_recording(tmp_path) -> None:
+    readings = iter([100.0])
+    writer = EvidenceWriter(tmp_path, clock=lambda: next(readings))
+    try:
+        with pytest.raises(EvidenceError):
+            writer.write("clock_exhausted", {})
+        assert writer.failed
+    finally:
+        writer.close()
+
+
+def test_writer_invalid_initial_clock_creates_no_run_directory(tmp_path) -> None:
+    before = set(tmp_path.iterdir())
+    with pytest.raises(ValueError, match="Clock"):
+        EvidenceWriter(tmp_path, clock=lambda: float("nan"))
+    assert set(tmp_path.iterdir()) == before
+
+
+def test_offline_provenance_records_observed_sources_not_candidate_approval(tmp_path) -> None:
+    writer = EvidenceWriter(tmp_path)
+    try:
+        record_offline_provenance(writer)
+        records = read_records(writer)
+        assert len(records) == 1
+        assert records[0]["event"] == "offline_provenance"
+        data = records[0]["data"]
+        assert data["selected_baseline"] == (
+            "da5776412fe0c200201032726b7db4a2f0cce954"
+        )
+        assert len(data["observed_head"]) == 40
+        assert isinstance(data["working_tree_dirty"], bool)
+        assert data["candidate_revision"] is None
+        assert data["live_execution_authorized"] is False
+        assert data["baseline_execution_verified"] is False
+        assert data["snapshot_atomic"] is False
+        assert data["installed_dependency_contents_verified"] is False
+
+        hashes = data["source_sha256"]
+        assert "scripts/evaluation_controls.py" in hashes
+        assert "agent.py" in hashes
+        assert all(
+            name in {
+                "scripts/evaluation_controls.py",
+                "agent.py", "safety.py", "pyproject.toml", "uv.lock",
+            } or name.startswith("data/corpus/")
+            for name in hashes
+        )
+        assert all(len(value) == 64 for value in hashes.values())
+        assert ".env" not in hashes
+    finally:
+        writer.close()
+
+
+def test_offline_provenance_git_failure_records_no_success(tmp_path, monkeypatch) -> None:
+    writer = EvidenceWriter(tmp_path)
+
+    def fail(*args, **kwargs):
+        raise OSError("private diagnostic details")
+
+    try:
+        monkeypatch.setattr(
+            "scripts.evaluation_controls.subprocess.check_output", fail
+        )
+        with pytest.raises(EvidenceError) as caught:
+            record_offline_provenance(writer)
+        assert "private" not in str(caught.value)
+        assert read_records(writer) == []
+    finally:
+        writer.close()
+
+
+def test_controller_records_startup_before_any_case(tmp_path) -> None:
+    writer = EvidenceWriter(tmp_path)
+    gate = AttemptGate(EvaluationLimits(), clock=lambda: 0.0)
+    try:
+        controller = CaseController(gate, writer)
+        records = read_records(writer)
+        assert [row["event"] for row in records] == [
+            "offline_provenance", "run_started"
+        ]
+        assert records[1]["data"]["max_attempts"] == 80
+        assert records[1]["data"]["budget_origin"] == "attempt_gate_construction"
+        assert records[1]["data"]["live_execution_authorized"] is False
+        assert controller.cases_admitted == 0
+        assert gate.reserved == 0
+    finally:
+        writer.close()
+
+
+def test_controller_provenance_failure_stops_startup(tmp_path, monkeypatch) -> None:
+    writer = EvidenceWriter(tmp_path)
+    gate = AttemptGate(EvaluationLimits(), clock=lambda: 0.0)
+
+    def fail(writer):
+        raise EvidenceError("controlled provenance failure")
+
+    try:
+        monkeypatch.setattr(
+            "scripts.evaluation_controls.record_offline_provenance", fail
+        )
+        with pytest.raises(EvidenceError):
+            CaseController(gate, writer)
+        assert gate.stopped
+        assert gate.reserved == 0
+        assert read_records(writer) == []
+    finally:
+        writer.close()
+
+
+def test_controller_records_admission_stop_once_without_claiming_termination(tmp_path) -> None:
+    from agent import YourAgent
+
+    writer = EvidenceWriter(tmp_path)
+    gate = AttemptGate(EvaluationLimits(), clock=lambda: 0.0)
+    controller = CaseController(gate, writer)
+    underlying = LocalClient(ConnectionError("controlled failure"))
+    try:
+        controller.run_case(
+            case_id="first", revision=TEST_REVISION,
+            question="How does chunking work in RAG?",
+            client=underlying, agent_factory=YourAgent,
+        )
+        for case_id in ("second", "third"):
+            with pytest.raises(AdmissionError):
+                controller.run_case(
+                    case_id=case_id, revision=TEST_REVISION,
+                    question="controlled",
+                    client=underlying, agent_factory=YourAgent,
+                )
+        stopped = [
+            row for row in read_records(writer)
+            if row["event"] == "run_admission_stopped"
+        ]
+        assert len(stopped) == 1
+        assert stopped[0]["data"]["cases_admitted"] == 1
+        assert stopped[0]["data"]["attempts_reserved"] == 1
+        assert stopped[0]["data"]["provider_work_termination_verified"] is False
+        assert len(underlying.calls) == 1
     finally:
         writer.close()
