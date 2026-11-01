@@ -467,8 +467,9 @@ Scope and remaining limitations:
 
 ### B6 — Timeout boundaries
 
-Status: controlled characterization passed; local test and documentation
-review completed. PR validation and integration remain pending.
+Historical local checkpoint: controlled characterization passed; local test and documentation
+review completed. PR validation and integration were pending at that checkpoint;
+see the 2026-11-01 integration reconciliation below.
 B5 / issue #6 completion and review satisfy the prerequisite; its merged
 characterization is present in base revision
 `23023a6d4713b89d84d4bb93fdcb1e0194afa009`.
@@ -488,8 +489,9 @@ remaining lifecycle risk.
 
 ### Outcome — B6 characterization, 2026-10-26
 
-Status: controlled characterization passed; local test and documentation
-review completed. PR validation and integration remain pending.
+Historical local checkpoint: controlled characterization passed; local test and documentation
+review completed. PR validation and integration were pending at that checkpoint;
+see the 2026-11-01 integration reconciliation below.
 
 Verification base:
 `23023a6d4713b89d84d4bb93fdcb1e0194afa009`, with the uncommitted B6
@@ -575,9 +577,42 @@ Evidence limits and remaining risks:
 
 Reviewed: 2026-10-26 — complete test diff and supporting documentation
 diffs reviewed in the conversation; no blocking issue found.
-PR validation and integration remain pending.
+At this historical review checkpoint, PR validation, integration, and
+commit recording were pending. See the integration reconciliation below.
 
-Commit: pending.
+### Integration and readiness reconciliation — 2026-11-01
+
+B6 characterization merged through [PR #11](https://github.com/apeaircreative/my-final-assignment/pull/11) on
+2026-10-26 at `638f565693ce3740855878033d8fd6183d803760`.
+This supersedes the integration-pending status of the historical local
+checkpoint above. It does not claim new tests, real-provider cancellation,
+or a B6 production correction.
+
+Partial offline evaluation tooling merged through [PR #18](https://github.com/apeaircreative/my-final-assignment/pull/18)
+at `fbbc5547fdc53e3853f54c4949952b67607c4b2c`, with
+[review reconciliation](https://github.com/apeaircreative/my-final-assignment/pull/18#issuecomment-6559504240) and
+[owner acceptance](https://github.com/apeaircreative/my-final-assignment/pull/18#issuecomment-6559576782) recorded.
+The acceptance is not independent second-person approval.
+
+[Issue #12's assessment](https://github.com/apeaircreative/my-final-assignment/issues/12#issuecomment-6559721999)
+is complete with a not-ready / execution-blocked outcome. Closure does
+not establish verified execution readiness.
+
+Remaining gates are retained under
+[#14](https://github.com/apeaircreative/my-final-assignment/issues/14#issuecomment-6559721538) and
+[#15](https://github.com/apeaircreative/my-final-assignment/issues/15#issuecomment-6559721747): verified real-provider
+completion/stop, hard aggregate enforcement, an approved complete execution
+path with truthful whole-run outcomes, and exact future-candidate
+compatibility. [#13](https://github.com/apeaircreative/my-final-assignment/issues/13) remains the fresh-case prerequisite.
+Issue #15's incomplete description also requires reconciliation before
+execution.
+
+Production B5 trace fidelity and explicit run-lifecycle implementation remain
+separate proposals requiring scope approval, not additional implementation
+requirements for the accepted partial checkpoint.
+
+No candidate is frozen and live evaluation remains unauthorized.
+This documentation reconciliation claims no new verification execution.
 
 ## Phase C — Demonstrated violations only
 

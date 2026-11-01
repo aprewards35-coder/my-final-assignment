@@ -2,8 +2,9 @@
 
 ## Status
 
-Partial tooling checkpoint for issue #12.
-Not evaluation-ready. Live evaluation remains unauthorized.
+Accepted partial tooling checkpoint for issue #12, merged through PR #18.
+Issue #12's assessment is complete with a not-ready / execution-blocked
+outcome. Not evaluation-ready. Live evaluation remains unauthorized.
 
 Reviewed implementation and test checkpoint:
 9fa2c19124f300fb4c81b1e16c841692d894f883.
@@ -182,7 +183,16 @@ The controlled timeout uses a shortened application timeout and explicit
 test-worker release/join. It does not verify real-provider cancellation.
 
 Incremental conversational source review and final local offline verification
-are recorded above. Owner acceptance and focused PR review remain pending.
+are recorded above. Subsequent [focused review reconciliation](https://github.com/apeaircreative/my-final-assignment/pull/18#issuecomment-6559504240)
+and [owner acceptance](https://github.com/apeaircreative/my-final-assignment/pull/18#issuecomment-6559576782)
+are complete for the partial scope. The owner disclosed control of both
+accounts; this is not independent second-person approval.
+
+PR #18 merged at `fbbc5547fdc53e3853f54c4949952b67607c4b2c`.
+The [final issue #12 assessment](https://github.com/apeaircreative/my-final-assignment/issues/12#issuecomment-6559721999)
+records closure as assessment complete, not execution-ready. Remaining
+readiness gates are retained under #14 and #15. No new test execution at
+the merge commit is claimed by this reconciliation.
 
 No live-provider calls or graders were run for these checkpoints.
 No quality improvement or evaluation-readiness approval is claimed.
