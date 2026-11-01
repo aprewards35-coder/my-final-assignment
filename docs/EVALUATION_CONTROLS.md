@@ -44,6 +44,12 @@ run-storage limit or a peak-memory bound during serialization.
 case_returned means one application invocation returned. It does not
 establish whole-run completion or answer quality.
 
+case_returned.data.provider_failure means the application trace reported
+a provider-call failure at case return, including an application-level
+timeout. It does not establish that the underlying client raised an
+exception or that provider work terminated. Read it alongside
+unresolved_invocation and subsequent client-call events.
+
 case_raised means case construction or execution raised an exception.
 It does not establish completed cleanup.
 
